@@ -2,7 +2,7 @@ from elftools.elf.elffile import ELFFile
 
 
 FLASH_BASE = 0x10000000
-FLASH_SIZE = 2 * 1024 * 1024
+FLASH_SIZE = 32 * 1024 * 1024
 
 
 def default_in_flash(addr: int, size: int) -> bool:
@@ -35,6 +35,7 @@ def load_elf(fname: str, in_flash=default_in_flash) -> Image:
 
         for prog in elf.iter_segments():
             paddr = prog["p_paddr"]
+            
             memsz = prog["p_memsz"]
 
             if not in_flash(paddr, memsz):
@@ -75,7 +76,7 @@ def load_elf(fname: str, in_flash=default_in_flash) -> Image:
         for c in chunks:
             offset = c.paddr - min_paddr
             data[offset:offset + len(c.data)] = c.data
-
+        
         return Image(
             addr=min_paddr,
             data=bytes(data),

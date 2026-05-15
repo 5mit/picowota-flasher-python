@@ -186,7 +186,11 @@ class SealCommand:
             + u32le(self.addr)
             + u32le(self.length)
             + u32le(self.crc)
+            + u32le(0) # Version
         )
+        print(self.addr)
+        print(self.length)
+        print(self.crc)
 
         if rw.write(buf) != len(buf):
             raise Exception("unexpected write length")
@@ -199,6 +203,7 @@ class GoCommand:
         self.addr = addr
 
     def execute(self, rw):
+        print(f"Jump to {hex(self.addr)}")
         buf = OPCODE_GO + u32le(self.addr)
 
         if rw.write(buf) != len(buf):
@@ -214,15 +219,30 @@ class InfoCommand:
         self.erase_size = None
         self.write_size = None
         self.max_data_len = None
+        self.active_slot = None
+        self.slot_a_state = None
+        self.slot_b_state = None
 
     def execute(self, rw):
         if rw.write(OPCODE_INFO) != len(OPCODE_INFO):
             raise Exception("unexpected write length")
 
-        resp = read_response(rw, 4 + 20)
+        resp = read_response(rw, 4 + 32)
 
         self.flash_addr = unpack_u32(resp, 4)
         self.flash_size = unpack_u32(resp, 8)
         self.erase_size = unpack_u32(resp, 12)
         self.write_size = unpack_u32(resp, 16)
         self.max_data_len = unpack_u32(resp, 20)
+        self.active_slot = unpack_u32(resp, 24)
+        self.slot_a_state = unpack_u32(resp, 28)
+        self.slot_b_state = unpack_u32(resp, 32)
+
+        print(f"flash_addr: 0x{self.flash_addr:08x}")
+        print(f"flash_size: {self.flash_size} bytes")
+        print(f"erase_size: {self.erase_size} bytes")
+        print(f"write_size: {self.write_size} bytes")
+        print(f"max_data_len: {self.max_data_len} bytes")
+        print(f"active_slot: {self.active_slot}")
+        print(f"slot_a_state: {self.slot_a_state}")
+        print(f"slot_b_state: {self.slot_b_state}")

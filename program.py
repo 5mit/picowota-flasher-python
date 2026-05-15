@@ -60,7 +60,7 @@ def sync(rw, progress_cb=None):
 # ------------------------
 
 def program(rw, img: Image, progress_cb=None):
-
+    
     # 1. Sync
     try:
         sync(rw, progress_cb)
@@ -81,11 +81,15 @@ def program(rw, img: Image, progress_cb=None):
     # 3. Pad data to write size
     pad = align(len(img.data), ic.write_size) - len(img.data)
     data = img.data + (b"\x00" * pad)
-
+    print("img addr:" + str(hex(img.addr)))
     # 4. Bounds checking
     if img.addr < ic.flash_addr:
         raise Exception(
             f"image load address too low: 0x{img.addr:08x} < 0x{ic.flash_addr:08x}"
+        )
+    if img.addr > ic.flash_addr + (2 * 1024 * 1024):
+        raise Exception(
+            f"image load address too high: 0x{img.addr:08x} < 0x{ic.flash_addr:08x}"
         )
 
     if img.addr + len(data) > ic.flash_addr + ic.flash_size:
@@ -121,7 +125,6 @@ def program(rw, img: Image, progress_cb=None):
     start = 0
     while start < len(data):
         end = min(start + ic.max_data_len, len(data))
-
         wc = WriteCommand(
             addr=img.addr + start,
             data=data[start:end],

@@ -119,6 +119,7 @@ def run():
 
     port = sys.argv[1]
     img = load_image()
+    print(hex(img.addr))
 
     conn = open_connection(port)
 
