@@ -1,5 +1,7 @@
 import struct
 import zlib
+from dataclasses import dataclass
+
 
 # Opcodes
 OPCODE_SYNC  = b"SYNC"
@@ -11,12 +13,21 @@ OPCODE_WRITE = b"WRIT"
 OPCODE_SEAL  = b"SEAL"
 OPCODE_GO    = b"GOGO"
 OPCODE_INFO  = b"INFO"
+# Config region opcodes
+OPCODE_CFG_READ  = b"CFGR"
+OPCODE_CFG_WRITE = b"CFGW"
+OPCODE_CFG_ERASE = b"CFGE"
+
 
 # Responses
 RESPONSE_SYNC      = b"PICO"
 RESPONSE_SYNC_WOTA = b"WOTA"
 RESPONSE_OK        = b"OKOK"
 RESPONSE_ERR       = b"ERR!"
+
+
+# Header Structure from server
+RESP_HDR = 8 # 4 bytes status + 4 bytes length
 
 class NotSyncedError(Exception):
     pass
@@ -25,16 +36,6 @@ class NotSyncedError(Exception):
 # ------------------------
 # Low-level helpers
 # ------------------------
-
-def read_exact(rw, n):
-    """Read exactly n bytes"""
-    buf = b""
-    while len(buf) < n:
-        chunk = rw.read(n - len(buf))
-        if not chunk:
-            raise IOError("connection closed")
-        buf += chunk
-    return buf
 
 
 def read_response(rw, response_len):
@@ -55,6 +56,23 @@ def unpack_u32(data, offset):
     return struct.unpack_from("<I", data, offset)[0]
 
 
+def read_frame(rw):
+    header = rw.read(RESP_HDR)
+    status = header[:4]
+    length = unpack_u32(header, 4)
+    #print(header, status, length)
+    payload = b""
+    if length:
+        payload = rw.read(length)
+        #print("payload::::", payload)
+        #print(len(payload))
+    
+
+
+
+    return status, payload
+
+
 # ------------------------
 # Commands
 # ------------------------
@@ -63,13 +81,13 @@ class SyncCommand:
     def execute(self, rw):
         rw.write(b"SYNC")
 
-        # ONLY read exactly 4 bytes (response header)
-        resp = read_exact(rw, 4)
+        status, _ = read_frame(rw)
+        #print(status)
 
-        if resp in (b"PICO", b"WOTA"):
+        if status in (b"PICO", b"WOTA"):
             return
 
-        raise Exception(f"unexpected sync response: {resp!r}")
+        raise Exception(f"unexpected sync response: {status!r}")
 
 
 class ReadCommand:
@@ -84,9 +102,12 @@ class ReadCommand:
         if rw.write(buf) != len(buf):
             raise Exception("unexpected write length")
 
-        resp = read_response(rw, 4 + self.length)
+        status, payload = read_frame(rw)
 
-        self.data = resp[4:]
+        if status != RESPONSE_OK:
+            raise Exception(f"READ failed: {status!r}")
+
+        self.data = payload
 
 
 class CsumCommand:
@@ -101,8 +122,15 @@ class CsumCommand:
         if rw.write(buf) != len(buf):
             raise Exception("unexpected write length")
 
-        resp = read_response(rw, 8)
-        self.csum = unpack_u32(resp, 4)
+        #resp = read_response(rw, 8)
+        #self.csum = unpack_u32(resp, 4)
+
+        status, payload = read_frame(rw)
+
+        if status != RESPONSE_OK:
+            raise Exception(f"CSUM failed: {status!r}")
+
+        self.csum = unpack_u32(payload, 0)
 
 
 def calculate_checksum(data: bytes) -> int:
@@ -128,8 +156,15 @@ class CRCCommand:
         if rw.write(buf) != len(buf):
             raise Exception("unexpected write length")
 
-        resp = read_response(rw, 8)
-        self.crc = unpack_u32(resp, 4)
+        #resp = read_response(rw, 8)
+        #self.crc = unpack_u32(resp, 4)
+
+        status, payload = read_frame(rw)
+
+        if status != RESPONSE_OK:
+            raise Exception(f"CRC failed: {status!r}")
+
+        self.crc = unpack_u32(payload, 0)
 
 
 class EraseCommand:
@@ -143,7 +178,11 @@ class EraseCommand:
         if rw.write(buf) != len(buf):
             raise Exception("unexpected write length")
 
-        read_response(rw, 4)
+        #read_response(rw, 4)
+        status, _ = read_frame(rw)
+
+        if status != RESPONSE_OK:
+            raise Exception(f"ERASE failed: {status!r}")
 
 
 class WriteCommand:
@@ -163,9 +202,21 @@ class WriteCommand:
         if rw.write(buf) != len(buf):
             raise Exception("unexpected write length")
 
-        resp = read_response(rw, 8)
+        #resp = read_response(rw, 8)
 
-        resp_crc = unpack_u32(resp, 4)
+       # resp_crc = unpack_u32(resp, 4)
+        #calc_crc = zlib.crc32(self.data) & 0xFFFFFFFF
+
+        #if resp_crc != calc_crc:
+        #    raise Exception(
+        #        f"CRC mismatch: 0x{resp_crc:08x} vs 0x{calc_crc:08x}"
+        #    )
+        status, payload = read_frame(rw)
+
+        if status != RESPONSE_OK:
+            raise Exception(f"WRITE failed: {status!r}")
+
+        resp_crc = unpack_u32(payload, 0)
         calc_crc = zlib.crc32(self.data) & 0xFFFFFFFF
 
         if resp_crc != calc_crc:
@@ -175,9 +226,10 @@ class WriteCommand:
 
 
 class SealCommand:
-    def __init__(self, addr, data: bytes):
+    def __init__(self, addr, data: bytes, version: int):
         self.addr = addr
         self.length = len(data)
+        self.version = version
         self.crc = zlib.crc32(data) & 0xFFFFFFFF
 
     def execute(self, rw):
@@ -185,17 +237,24 @@ class SealCommand:
             OPCODE_SEAL
             + u32le(self.addr)
             + u32le(self.length)
+            + u32le(self.version)
             + u32le(self.crc)
-            + u32le(0) # Version
+            
         )
+        print("SEAL command:")
         print(self.addr)
         print(self.length)
+        print(self.version)
         print(self.crc)
 
         if rw.write(buf) != len(buf):
             raise Exception("unexpected write length")
 
-        read_response(rw, 4)
+        #read_response(rw, 4)
+        status, _ = read_frame(rw)
+
+        if status != RESPONSE_OK:
+            raise Exception(f"SEAL failed: {status!r}")
 
 
 class GoCommand:
@@ -209,34 +268,49 @@ class GoCommand:
         if rw.write(buf) != len(buf):
             raise Exception("unexpected write length")
 
-        # fire-and-forget (same as Go)
+        # fire-and-forget (same as Go) (No response expected)
 
-
+@dataclass
 class InfoCommand:
-    def __init__(self):
-        self.flash_addr = None
-        self.flash_size = None
-        self.erase_size = None
-        self.write_size = None
-        self.max_data_len = None
-        self.active_slot = None
-        self.slot_a_state = None
-        self.slot_b_state = None
+    # Bounds
+    flash_addr: int | None = None
+    flash_size: int | None = None
+    erase_size: int | None = None
+    write_size: int | None = None
+    max_data_len: int | None = None
+    # Meta
+    active_slot: int | None = None
+    slot_a_state: int | None = None
+    slot_b_state: int | None = None
+    # Active Image Header
+    vtor: int | None = None
+    size: int | None = None
+    version: int | None = None
+    crc: int | None = None
 
     def execute(self, rw):
         if rw.write(OPCODE_INFO) != len(OPCODE_INFO):
             raise Exception("unexpected write length")
 
-        resp = read_response(rw, 4 + 32)
+        status, payload = read_frame(rw)
 
-        self.flash_addr = unpack_u32(resp, 4)
-        self.flash_size = unpack_u32(resp, 8)
-        self.erase_size = unpack_u32(resp, 12)
-        self.write_size = unpack_u32(resp, 16)
-        self.max_data_len = unpack_u32(resp, 20)
-        self.active_slot = unpack_u32(resp, 24)
-        self.slot_a_state = unpack_u32(resp, 28)
-        self.slot_b_state = unpack_u32(resp, 32)
+        if status != RESPONSE_OK:
+            raise Exception("INFO failed")
+
+        (
+            self.flash_addr,
+            self.flash_size,
+            self.erase_size,
+            self.write_size,
+            self.max_data_len,
+            self.active_slot,
+            self.slot_a_state,
+            self.slot_b_state,
+            self.vtor,
+            self.size,
+            self.version,
+            self.crc,
+        ) = struct.unpack("<12I", payload)
 
         print(f"flash_addr: 0x{self.flash_addr:08x}")
         print(f"flash_size: {self.flash_size} bytes")
@@ -246,3 +320,83 @@ class InfoCommand:
         print(f"active_slot: {self.active_slot}")
         print(f"slot_a_state: {self.slot_a_state}")
         print(f"slot_b_state: {self.slot_b_state}")
+        print(f"vtor: 0x{self.vtor:08x}")
+        print(f"size: {self.size} bytes")
+        print(f"version: 0x{self.version:08x}")
+        print(f"crc: 0x{self.crc:08x}")
+
+class ConfigReadCommand:
+    def __init__(self, offset, length):
+        self.offset = offset
+        self.length = length
+        self.data = None
+
+    def execute(self, rw):
+        buf = (
+            OPCODE_CFG_READ
+            + u32le(self.offset)
+            + u32le(self.length)
+        )
+
+        if rw.write(buf) != len(buf):
+            raise Exception("unexpected write length")
+
+        status, payload = read_frame(rw)
+
+        if status != RESPONSE_OK:
+            raise Exception(f"config read failed: {status!r}")
+
+        self.data = payload
+
+
+class ConfigEraseCommand:
+    def __init__(self, offset, length):
+        self.offset = offset
+        self.length = length
+
+    def execute(self, rw):
+        buf = (
+            OPCODE_CFG_ERASE
+            + u32le(self.offset)
+            + u32le(self.length)
+        )
+
+        if rw.write(buf) != len(buf):
+            raise Exception("unexpected write length")
+
+        status, _ = read_frame(rw)
+
+        if status != RESPONSE_OK:
+            raise Exception(f"config erase failed: {status!r}")
+
+
+
+class ConfigWriteCommand:
+    def __init__(self, offset, data: bytes):
+        self.offset = offset
+        self.length = len(data)
+        self.data = data
+
+    def execute(self, rw):
+        buf = (
+            OPCODE_CFG_WRITE
+            + u32le(self.offset)
+            + u32le(self.length)
+            + self.data
+        )
+
+        if rw.write(buf) != len(buf):
+            raise Exception("unexpected write length")
+
+        status, payload = read_frame(rw)
+
+        if status != RESPONSE_OK:
+            raise Exception(f"config write failed: {status!r}")
+
+        resp_crc = unpack_u32(payload, 0)
+        calc_crc = zlib.crc32(self.data) & 0xFFFFFFFF
+
+        if resp_crc != calc_crc:
+            raise Exception(
+                f"CRC mismatch: 0x{resp_crc:08X} vs 0x{calc_crc:08X}"
+            )

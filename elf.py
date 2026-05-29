@@ -2,7 +2,7 @@ from elftools.elf.elffile import ELFFile
 
 
 FLASH_BASE = 0x10000000
-FLASH_SIZE = 32 * 1024 * 1024
+FLASH_SIZE = 2 * 1024 * 1024
 
 
 def default_in_flash(addr: int, size: int) -> bool:
@@ -10,9 +10,10 @@ def default_in_flash(addr: int, size: int) -> bool:
 
 
 class Image:
-    def __init__(self, addr: int, data: bytes):
+    def __init__(self, addr: int, data: bytes, version: int):
         self.addr = addr
         self.data = data
+        self.version = version
 
 
 class Chunk:
@@ -25,6 +26,14 @@ def in_prog(vaddr: int, size: int, prog) -> bool:
     return vaddr >= prog["p_vaddr"] and (vaddr + size) <= (
         prog["p_vaddr"] + prog["p_memsz"]
     )
+
+def read_fw_version(elf):
+    sec = elf.get_section_by_name(".fw_version")
+    if sec is None:
+        return 0
+
+    data = sec.data()
+    return int.from_bytes(data[:4], "little")
 
 
 def load_elf(fname: str, in_flash=default_in_flash) -> Image:
@@ -80,4 +89,5 @@ def load_elf(fname: str, in_flash=default_in_flash) -> Image:
         return Image(
             addr=min_paddr,
             data=bytes(data),
+            version=read_fw_version(elf),
         )

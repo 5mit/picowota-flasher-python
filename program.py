@@ -12,9 +12,10 @@ MAX_SYNC_ATTEMPTS = 5
 
 
 class Image:
-    def __init__(self, addr: int, data: bytes):
+    def __init__(self, addr: int, data: bytes, version: int):
         self.addr = addr
         self.data = data
+        self.version = version
 
 
 class ProgressReport:
@@ -83,6 +84,11 @@ def program(rw, img: Image, progress_cb=None):
     data = img.data + (b"\x00" * pad)
     print("img addr:" + str(hex(img.addr)))
     # 4. Bounds checking
+    if img.addr == ic.vtor: # Don't overwrite active firmware slot
+        raise Exception(
+            f"image load address same as active firmware in slot {"A" if ic.active_slot == 0 else "B"}: 0x{img.addr:08x} == 0x{ic.vtor:08x}. Provided image file must instead be linked for slot {"B" if ic.active_slot == 0 else "A"} (0x{ic.flash_addr:08x})"
+        )
+    # Ensure image is within target firmware slot
     if img.addr < ic.flash_addr:
         raise Exception(
             f"image load address too low: 0x{img.addr:08x} < 0x{ic.flash_addr:08x}"
@@ -141,7 +147,7 @@ def program(rw, img: Image, progress_cb=None):
     # 7. Seal
     report_progress(progress_cb, "Finalising", 0, 1)
 
-    sc = SealCommand(img.addr, data)
+    sc = SealCommand(img.addr, data, img.version)
 
     try:
         sc.execute(rw)
