@@ -10,7 +10,8 @@ def default_in_flash(addr: int, size: int) -> bool:
 
 
 class Image:
-    def __init__(self, addr: int, data: bytes, version: int):
+    def __init__(self, addr: int, vtor: int,  data: bytes, version: int):
+        self.vtor = vtor
         self.addr = addr
         self.data = data
         self.version = version
@@ -36,11 +37,27 @@ def read_fw_version(elf):
     return int.from_bytes(data[:4], "little")
 
 
+from elftools.elf.sections import SymbolTableSection
+
+def read_vtor(elf):
+    for section in elf.iter_sections():
+        if not isinstance(section, SymbolTableSection):
+            continue
+
+        symbol = section.get_symbol_by_name("__flash_binary_start")
+        if symbol:
+            return symbol[0]["st_value"]
+
+    raise ValueError("__flash_binary_start not found")
+
 def load_elf(fname: str, in_flash=default_in_flash) -> Image:
     with open(fname, "rb") as f:
         elf = ELFFile(f)
 
         chunks = []
+
+        vtor = read_vtor(elf)
+        print(f"found VTOR: {vtor:08x}")
 
         for prog in elf.iter_segments():
             paddr = prog["p_paddr"]
@@ -88,6 +105,7 @@ def load_elf(fname: str, in_flash=default_in_flash) -> Image:
         
         return Image(
             addr=min_paddr,
+            vtor=vtor,
             data=bytes(data),
             version=read_fw_version(elf),
         )

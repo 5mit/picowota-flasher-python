@@ -1,4 +1,4 @@
-from typing import Optional, Callable
+
 
 from protocol import (
     SyncCommand,
@@ -8,25 +8,53 @@ from protocol import (
     ConfigWriteCommand
 )
 
-from program import sync, report_progress
-
+from program import sync, query
+from progressbar import ProgressBar, report_progress
 
 # ------------------------
 # Config region read
 # ------------------------
 
-def read_config(rw, offset, length, progress_cb=None) -> bytes:
+def read_config(rw, offset, total_length, pbar:ProgressBar=None) -> bytes:
+      
+    if (offset & 255) != 0 or (total_length & 255) != 0:
+        raise ValueError("OFFSET & SIZE must be multiples of 256")
+
+    remaining_length = total_length
+    data = b""
+
+    MAX_CHUNK_SIZE = 1024
+    while remaining_length > 0:
+        if remaining_length > MAX_CHUNK_SIZE:
+            length = MAX_CHUNK_SIZE
+        else:
+            length = remaining_length
+        try:
+            data += _read_config(rw, offset, length, pbar)
+        except Exception as e:
+            if pbar: 
+                pbar.progress_q.put(None)
+                pbar.reporter.join()
+            raise e
+        offset += length
+        remaining_length -= length
+
+    print(f"Read {len(data)} bytes")
+
+    return data
+
+def _read_config(rw, offset, length, pbar:ProgressBar=None) -> bytes:
     """
     Read bytes from config flash region.
     """
 
     # Sync
     try:
-        sync(rw, progress_cb)
+        sync(rw, pbar)
     except Exception as e:
         raise Exception(f"sync: {e}")
 
-    report_progress(progress_cb, "Reading config", 0, length)
+    if pbar: report_progress(pbar.progress_cb, "Reading config", 0, length)
 
     rc = ConfigReadCommand(offset, length)
 
@@ -35,42 +63,32 @@ def read_config(rw, offset, length, progress_cb=None) -> bytes:
     except Exception as e:
         raise Exception(f"config read: {e}")
 
-    report_progress(progress_cb, "Reading config", length, length)
-
+    if pbar: 
+        report_progress(pbar.progress_cb, "Reading config", length, length)
+        pbar.progress_q.put(None)
+        pbar.reporter.join()
     return rc.data
 
-
-# ------------------------
-# Pretty-print config region
-# ------------------------
-
-def print_config(rw, offset, length, progress_cb=None):
-    """
-    Read and hex-print config region.
-    """
-
-    data = read_config(rw, offset, length, progress_cb)
-
-    print(f"\nConfig region @ offset 0x{offset:08X}")
-    print(f"Length: {length} bytes\n")
-
+def print_config_raw(data:bytes):
     for i in range(0, len(data), 16):
+        if i > 0 and (i % 256) == 0:
+            print()
         chunk = data[i:i+16]
 
         hex_part = " ".join(f"{b:02X}" for b in chunk)
         ascii_part = "".join(
-            chr(b) if 32 <= b <= 126 else "."
+            chr(b) if 32 <= b < 127 else "."
             for b in chunk
         )
 
-        print(f"{offset + i:08X}  {hex_part:<47}  {ascii_part}")
+        print(f"{i:08X}  {hex_part:<48}  {ascii_part}")
 
 
 # ------------------------
 # Config region erase
 # ------------------------
 
-def erase_config(rw, offset, length, progress_cb=None):
+def erase_config(rw, offset, length, pbar:ProgressBar=None):
     """
     Erase config flash region.
     Offset/length should be sector aligned.
@@ -80,11 +98,11 @@ def erase_config(rw, offset, length, progress_cb=None):
 
     # Sync
     try:
-        sync(rw, progress_cb)
+        sync(rw, pbar)
     except Exception as e:
         raise Exception(f"sync: {e}")
 
-    report_progress(progress_cb, "Erasing config", 0, length)
+    if pbar: report_progress(pbar.progress_cb, "Erasing config", 0, length)
 
     start = 0
     erase_size = 4096
@@ -102,35 +120,70 @@ def erase_config(rw, offset, length, progress_cb=None):
 
         start += erase_size
 
-        report_progress(
-            progress_cb,
+        if pbar: report_progress(
+            pbar.progress_cb,
             "Erasing config",
             start,
             length,
         )
-
+    if pbar:
+        pbar.progress_q.put(None)
+        pbar.reporter.join()
     print("Config erase complete.")
 
 
-    from protocol import ConfigWriteCommand
-from program import sync, report_progress
 
 
-def write_config(rw, offset, data: bytes, progress_cb=None):
+def write_config(conn, offset:int, fname:str, pbar:ProgressBar=None):
+    if (offset & 255) != 0:
+        raise ValueError("OFFSET must be multiple of 256")
+
+    with open(fname, "rb") as f:
+        data = f.read()
+
+    # optional: enforce alignment rules like erase/read
+    print(len(data))
+    if len(data) & 255 != 0:
+        raise ValueError("FILE SIZE must be multiple of 256")
+
+    try:
+        _write_config(conn, offset, data, pbar)
+    except Exception as e:
+        if pbar: 
+            pbar.progress_q.put(None)
+            pbar.reporter.join()
+        raise e
+
+
+    print("Writecfg complete")
+    return
+
+
+def _write_config(rw, offset, data: bytes, pbar:ProgressBar=None):
     """
     Write bytes to config flash region.
     """
 
     # Sync first (same pattern as read/erase)
     try:
-        sync(rw, progress_cb)
+        sync(rw, pbar)
     except Exception as e:
         raise Exception(f"sync: {e}")
 
-    total = len(data)
-    report_progress(progress_cb, "Writing config", 0, total)
 
-    chunk_size = 1024  #TODO grab from InfoCommand
+    # 2. Query device info
+    ic = None
+    try:
+        ic = query(rw, pbar)
+    except Exception as e:
+        raise Exception(f"info: {e}")
+
+
+
+    total = len(data)
+    if pbar: report_progress(pbar.progress_cb, "Writing config", 0, total)
+
+    chunk_size = ic.max_data_len
     written = 0
 
     #TODO erase sector first
@@ -138,7 +191,7 @@ def write_config(rw, offset, data: bytes, progress_cb=None):
     print(data)
 
     while written < total:
-        chunk = data[written:written + chunk_size]
+        chunk = data[written:(written + chunk_size)]
 
         wc = ConfigWriteCommand(offset + written, chunk)
 
@@ -149,7 +202,10 @@ def write_config(rw, offset, data: bytes, progress_cb=None):
 
         written += len(chunk)
 
-        report_progress(progress_cb, "Writing config", written, total)
+        if pbar: report_progress(pbar.progress_cb, "Writing config", written, total)
 
-    report_progress(progress_cb, "Writing config", total, total)
+    if pbar: 
+        report_progress(pbar.progress_cb, "Writing config", total, total)
+        pbar.progress_q.put(None)
+        pbar.reporter.join()
     print("Config write complete.")

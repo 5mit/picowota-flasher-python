@@ -227,7 +227,8 @@ class WriteCommand:
 
 class SealCommand:
     def __init__(self, addr, data: bytes, version: int):
-        self.addr = addr
+        self.addr = addr + 4096 #TODO replace with header size variable
+        data = data[4096:]
         self.length = len(data)
         self.version = version
         self.crc = zlib.crc32(data) & 0xFFFFFFFF
@@ -241,11 +242,11 @@ class SealCommand:
             + u32le(self.crc)
             
         )
-        print("SEAL command:")
-        print(self.addr)
-        print(self.length)
-        print(self.version)
-        print(self.crc)
+        #print("SEAL command:")
+        #print(self.addr)
+        #print(self.length)
+        #print(self.version)
+        #print(self.crc)
 
         if rw.write(buf) != len(buf):
             raise Exception("unexpected write length")
@@ -262,7 +263,7 @@ class GoCommand:
         self.addr = addr
 
     def execute(self, rw):
-        print(f"Jump to {hex(self.addr)}")
+        #print(f"Jump to {hex(self.addr)}")
         buf = OPCODE_GO + u32le(self.addr)
 
         if rw.write(buf) != len(buf):
@@ -274,7 +275,7 @@ class GoCommand:
 class InfoCommand:
     # Bounds
     flash_addr: int | None = None
-    flash_size: int | None = None
+    flash_slot_size: int | None = None
     erase_size: int | None = None
     write_size: int | None = None
     max_data_len: int | None = None
@@ -284,7 +285,7 @@ class InfoCommand:
     slot_b_state: int | None = None
     # Active Image Header
     vtor: int | None = None
-    size: int | None = None
+    firmware_size: int | None = None
     version: int | None = None
     crc: int | None = None
 
@@ -299,7 +300,7 @@ class InfoCommand:
 
         (
             self.flash_addr,
-            self.flash_size,
+            self.flash_slot_size,
             self.erase_size,
             self.write_size,
             self.max_data_len,
@@ -307,13 +308,14 @@ class InfoCommand:
             self.slot_a_state,
             self.slot_b_state,
             self.vtor,
-            self.size,
+            self.firmware_size,
             self.version,
             self.crc,
         ) = struct.unpack("<12I", payload)
 
+    def print(self):
         print(f"flash_addr: 0x{self.flash_addr:08x}")
-        print(f"flash_size: {self.flash_size} bytes")
+        print(f"flash_slot_size: {self.flash_slot_size} bytes")
         print(f"erase_size: {self.erase_size} bytes")
         print(f"write_size: {self.write_size} bytes")
         print(f"max_data_len: {self.max_data_len} bytes")
@@ -321,7 +323,7 @@ class InfoCommand:
         print(f"slot_a_state: {self.slot_a_state}")
         print(f"slot_b_state: {self.slot_b_state}")
         print(f"vtor: 0x{self.vtor:08x}")
-        print(f"size: {self.size} bytes")
+        print(f"firmware_size: {self.firmware_size} bytes")
         print(f"version: 0x{self.version:08x}")
         print(f"crc: 0x{self.crc:08x}")
 
