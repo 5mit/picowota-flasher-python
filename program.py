@@ -189,7 +189,7 @@ def _program(rw, img: Image, pbar:ProgressBar=None):
     # 7. Seal
     if pbar: report_progress(pbar.progress_cb, "Sealing", 0, 1)
 
-    sc = SealCommand(img.addr, data, img.version)
+    sc = SealCommand()
 
     try:
         sc.execute(rw)

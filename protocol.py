@@ -226,21 +226,11 @@ class WriteCommand:
 
 
 class SealCommand:
-    def __init__(self, addr, data: bytes, version: int):
-        self.addr = addr + 4096 #TODO replace with header size variable
-        data = data[4096:]
-        self.length = len(data)
-        self.version = version
-        self.crc = zlib.crc32(data) & 0xFFFFFFFF
+
 
     def execute(self, rw):
         buf = (
-            OPCODE_SEAL
-            + u32le(self.addr)
-            + u32le(self.length)
-            + u32le(self.version)
-            + u32le(self.crc)
-            
+            OPCODE_SEAL  
         )
         #print("SEAL command:")
         #print(self.addr)
